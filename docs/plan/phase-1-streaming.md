@@ -7,57 +7,76 @@
 ## Tasks
 
 ### Contracts
-- [ ] `contracts/messages.py` — `TickEnvelope` with `message_id` (UUID), `correlation_id`, `schema_version`, `emitted_at` (UTC), `symbol`, `payload`
-- [ ] Payload model with price, volume, provider timestamp
-- [ ] Envelope serialization/deserialization in `messaging/serialization.py`
+- [x] `contracts/messages.py` — `TickEnvelope` with `message_id` (UUID), `correlation_id`, `schema_version`, `emitted_at` (UTC), `symbol`, `payload`
+- [x] Payload model with price, volume, provider timestamp
+- [x] Envelope serialization/deserialization in `messaging/serialization.py`
 
 ### Provider abstraction
-- [ ] `ingestion/providers/base.py` — `MarketDataProvider` protocol (`fetch(symbols) -> list[Observation]`)
-- [ ] `ingestion/providers/coingecko.py` — implements it; batch multi-symbol call
-- [ ] Normalise all timestamps to UTC at the provider boundary, never downstream
-- [ ] Handle 429 with `Retry-After`, 5xx with exponential backoff + jitter
+- [x] `ingestion/providers/base.py` — `MarketDataProvider` protocol (`fetch(symbols) -> list[Observation]`)
+- [x] `ingestion/providers/coingecko.py` — implements it; batch multi-symbol call
+- [x] Normalise all timestamps to UTC at the provider boundary, never downstream
+- [x] Handle 429 with `Retry-After`, 5xx with exponential backoff + jitter
 
 ### Producer
-- [ ] `ingestion/poller.py` — interval loop with jitter
-- [ ] `ingestion/publisher.py` — persistent delivery (mode 2) **and** publisher confirms
-- [ ] Bounded in-memory buffer when broker is down; shed oldest + log when full (never unbounded)
-- [ ] Heartbeat counter emitted every loop iteration, success or failure
-- [ ] Graceful SIGTERM: stop polling, drain in-flight, close cleanly
-- [ ] `services/producer/main.py` — wiring only
+- [x] `ingestion/poller.py` — interval loop with jitter
+- [x] `ingestion/publisher.py` — persistent delivery (mode 2) **and** publisher confirms
+- [x] Bounded in-memory buffer when broker is down; shed oldest + log when full (never unbounded)
+- [x] Heartbeat counter emitted every loop iteration, success or failure
+- [x] Graceful SIGTERM: stop polling, drain in-flight, close cleanly
+- [x] `services/producer/main.py` — wiring only
 
 ### RabbitMQ topology
-- [ ] `messaging/topology.py` — declarative, idempotent declaration of:
-  - [ ] `market.data` (topic, durable), `market.retry`, `market.dlx`
-  - [ ] `q.ticks.persist` bound `tick.#`, with `x-dead-letter-exchange`, `x-max-length`, `x-message-ttl`
-  - [ ] `q.ticks.retry` TTL 30s, DLX back to `market.data`
-  - [ ] `q.ticks.dead` (no TTL — dead letters persist until triaged)
-- [ ] `scripts/verify_topology.py` — asserts live broker matches the declaration
+- [x] `messaging/topology.py` — declarative, idempotent declaration of:
+  - [x] `market.data` (topic, durable), `market.retry`, `market.dlx`
+  - [x] `q.ticks.persist` bound `tick.#`, with `x-dead-letter-exchange`, `x-max-length`, `x-message-ttl`
+  - [x] `q.ticks.retry` TTL 30s, DLX back to `market.data`
+  - [x] `q.ticks.dead` (no TTL — dead letters persist until triaged)
+- [x] `scripts/verify_topology.py` — asserts live broker matches the declaration
 
 ### Consumer
-- [ ] `messaging/connection.py` — connection/channel lifecycle, auto-reconnect with backoff
-- [ ] `messaging/consumer.py` — base consumer with QoS prefetch, ack/nack, retry-count header
-- [ ] Error classification: schema violation → reject to DLQ (`dead.validation`); transient → retry queue; duplicate → ack silently
-- [ ] Retry capped at 3, then → `dead.exhausted`
-- [ ] `services/consumer/main.py`
+- [x] `messaging/connection.py` — connection/channel lifecycle, auto-reconnect with backoff
+- [x] `messaging/consumer.py` — base consumer with QoS prefetch, ack/nack, retry-count header
+- [x] Error classification: schema violation → reject to DLQ (`dead.validation`); transient → retry queue; duplicate → ack silently
+- [x] Retry capped at 3, then → `dead.exhausted`
+- [x] `services/consumer/main.py`
 
 ### Storage
-- [ ] `storage/models.py` — `symbols`, `raw_ticks` (partitioned monthly by `observed_at`)
-- [ ] Unique constraints: `(symbol_id, observed_at)` and `(message_id)`
-- [ ] BRIN index on `observed_at`
-- [ ] `storage/repositories/ticks.py` — idempotent upsert (`ON CONFLICT DO NOTHING`)
-- [ ] Alembic migration + partition creation helper
-- [ ] `storage/engine.py` — pooled session factory, bounded pool size
+- [x] `storage/models.py` — `symbols`, `raw_ticks` (partitioned monthly by `observed_at`)
+- [x] Unique constraints: `(symbol_id, observed_at)` and `(message_id)` (partitioned tables require the partition key in every unique index, so `message_id`'s constraint carries `observed_at` too)
+- [x] BRIN index on `observed_at`
+- [x] `storage/repositories/ticks.py` — idempotent upsert (`ON CONFLICT DO NOTHING`)
+- [x] Alembic migration + partition creation helper
+- [x] `storage/engine.py` — pooled session factory, bounded pool size
 
 ## Tests
-- [ ] **Idempotency:** publish same envelope twice → exactly one row
-- [ ] **Error classification:** malformed payload → DLQ; simulated DB failure → retry queue (integration, testcontainers)
-- [ ] Provider mocked at the interface — **never hit the live API in tests**
-- [ ] Backoff honours `Retry-After`
-- [ ] Topology declaration is idempotent (declare twice, no error)
-- [ ] Envelope round-trips through serialize/deserialize unchanged
-- [ ] Retry-count header increments and caps at 3
-- [ ] Integration: producer → broker → consumer → row appears in Postgres
+- [x] **Idempotency:** publish same envelope twice → exactly one row
+- [x] **Error classification:** malformed payload → DLQ; simulated DB failure → retry queue (integration, testcontainers)
+- [x] Provider mocked at the interface — **never hit the live API in tests**
+- [x] Backoff honours `Retry-After`
+- [x] Topology declaration is idempotent (declare twice, no error)
+- [x] Envelope round-trips through serialize/deserialize unchanged
+- [x] Retry-count header increments and caps at 3
+- [x] Integration: producer → broker → consumer → row appears in Postgres
 
 ## Watch out for
 - Persistence without publisher confirms means the producer believes messages were saved that weren't. Both, always.
 - `x-max-length` is mandatory. An unbounded queue turns a consumer outage into a broker disk-full outage.
+
+## Exit criterion result
+
+Ran against the live docker-compose stack: synthetic load at 2 msg/s through the
+real `Publisher`/topology, real `services.consumer.main` process hard-killed
+(`TerminateProcess`, simulating a crash rather than a graceful stop) for a full
+5 minutes while the producer kept publishing, then restarted.
+
+```
+published:        646
+rows in postgres:  646
+distinct in pg:    646
+missing (lost):    0
+unexpected extra:  0
+duplicate rows:    0
+RESULT: PASS
+```
+
+**Phase 1 exit criterion met.**
