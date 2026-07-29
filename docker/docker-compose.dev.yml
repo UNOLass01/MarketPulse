@@ -1,0 +1,18 @@
+# Local-dev override: expose ports on the host and turn up log verbosity.
+# Usage: docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up -d
+
+services:
+  postgres:
+    # Host port is 5433, not 5432: a machine-local Postgres install commonly
+    # already owns 5432, and a port clash here fails silently as an auth
+    # error (you connect to the *other* server) rather than "connection
+    # refused". Container-to-container traffic is unaffected — it still
+    # uses the service name "postgres" on 5432.
+    ports:
+      - "${MP_DB__PORT:-5433}:5432"
+    command: ["postgres", "-c", "log_statement=all"]
+
+  rabbitmq:
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # management UI

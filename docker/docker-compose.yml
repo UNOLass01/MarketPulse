@@ -1,0 +1,36 @@
+name: marketpulse
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${MP_DB__USER:-marketpulse}
+      POSTGRES_PASSWORD: ${MP_DB__PASSWORD:-marketpulse}
+      POSTGRES_DB: ${MP_DB__NAME:-marketpulse}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${MP_DB__USER:-marketpulse} -d ${MP_DB__NAME:-marketpulse}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${MP_RABBITMQ__USER:-marketpulse}
+      RABBITMQ_DEFAULT_PASS: ${MP_RABBITMQ__PASSWORD:-marketpulse}
+      RABBITMQ_DEFAULT_VHOST: ${MP_RABBITMQ__VHOST:-/}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  rabbitmq_data:

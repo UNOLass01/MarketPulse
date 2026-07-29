@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "marketpulse"
+version = "0.1.0"
+description = "Real-time crypto streaming analytics + ML pipeline"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.5",
+    "black>=24.4",
+    "mypy>=1.10",
+    "pytest>=8.2",
+    "pytest-cov>=5.0",
+    "pytest-asyncio>=0.23",
+    "pre-commit>=3.7",
+    "testcontainers>=4.5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/marketpulse"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["marketpulse"]
+mypy_path = "src"
+strict = true
+disallow_untyped_defs = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "unit: fast, no I/O",
+    "contract: schema/contract tests, no I/O",
+    "integration: needs docker via testcontainers",
+    "e2e: full loop through compose",
+]
+
+[tool.coverage.run]
+source = ["src/marketpulse"]
+
+[tool.coverage.report]
+fail_under = 0
+show_missing = true
