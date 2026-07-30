@@ -45,4 +45,4 @@ revision:
 	alembic revision --autogenerate -m "$(m)"
 
 seed:
-	python -m marketpulse.ingestion.seed
+	python scripts/seed_historical.py

@@ -60,6 +60,37 @@ class CoinGeckoProvider:
         )
         return self._parse_observations(data)
 
+    def fetch_history(self, symbol: str, *, days: int) -> list[Observation]:
+        """Historical price+volume series for ``symbol`` over the trailing ``days``.
+
+        Used only by the offline backfill path (``scripts/seed_historical.py``)
+        — the live poller always calls ``fetch``. CoinGecko's ``market_chart``
+        endpoint returns ``prices`` and ``total_volumes`` as separate
+        ``[timestamp_ms, value]`` series sharing the same timestamps and
+        length for a given request, so they're zipped by position.
+        """
+        coin_id = self._symbol_to_coin_id.get(symbol)
+        if coin_id is None:
+            return []
+
+        data = self._get_with_retry(
+            f"/coins/{coin_id}/market_chart",
+            params={"vs_currency": self._vs_currency, "days": str(days)},
+        )
+        prices = data.get("prices", [])
+        volumes = data.get("total_volumes", [])
+        observations = []
+        for (timestamp_ms, price), (_, volume) in zip(prices, volumes, strict=False):
+            observations.append(
+                Observation(
+                    symbol=symbol,
+                    price=Decimal(str(price)),
+                    volume=Decimal(str(volume)),
+                    observed_at=datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC),
+                )
+            )
+        return observations
+
     def _parse_observations(self, data: dict[str, Any]) -> list[Observation]:
         observations: list[Observation] = []
         volume_key = f"{self._vs_currency}_24h_vol"

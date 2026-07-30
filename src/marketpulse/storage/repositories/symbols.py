@@ -1,5 +1,6 @@
 """Symbol lookups/creation."""
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -16,3 +17,8 @@ def get_or_create_symbol_id(session: Session, code: str) -> int:
     )
     result = session.execute(stmt)
     return result.scalar_one()
+
+
+def list_symbols(session: Session) -> list[Symbol]:
+    """All known symbols — used to warm up in-memory feature window state."""
+    return list(session.execute(select(Symbol)).scalars())

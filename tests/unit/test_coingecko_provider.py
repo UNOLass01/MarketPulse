@@ -106,3 +106,55 @@ def test_4xx_error_raises_permanent_error() -> None:
 
     with pytest.raises(PermanentError):
         provider.fetch(["BTC-USD"])
+
+
+def _market_chart_response() -> FakeResponse:
+    return FakeResponse(
+        200,
+        {
+            "prices": [[1_700_000_000_000, 65000.5], [1_700_003_600_000, 65100.0]],
+            "total_volumes": [[1_700_000_000_000, 1000.0], [1_700_003_600_000, 1100.0]],
+        },
+    )
+
+
+def test_fetch_history_parses_price_and_volume_series() -> None:
+    session = FakeSession([_market_chart_response()])
+    provider = CoinGeckoProvider({"BTC-USD": "bitcoin"}, session=session, sleep=lambda s: None)
+
+    observations = provider.fetch_history("BTC-USD", days=1)
+
+    assert len(observations) == 2
+    first = observations[0]
+    assert first.symbol == "BTC-USD"
+    assert first.price == Decimal("65000.5")
+    assert first.volume == Decimal("1000.0")
+    assert first.observed_at == datetime.fromtimestamp(1_700_000_000, tz=UTC)
+    assert first.observed_at.tzinfo is UTC
+
+
+def test_fetch_history_unknown_symbol_skips_request() -> None:
+    session = FakeSession([])
+    provider = CoinGeckoProvider({"BTC-USD": "bitcoin"}, session=session, sleep=lambda s: None)
+
+    assert provider.fetch_history("ETH-USD", days=1) == []
+    assert session.calls == 0
+
+
+def test_fetch_history_mismatched_series_lengths_zips_to_shortest() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                200,
+                {
+                    "prices": [[1_700_000_000_000, 100.0], [1_700_003_600_000, 101.0]],
+                    "total_volumes": [[1_700_000_000_000, 10.0]],
+                },
+            )
+        ]
+    )
+    provider = CoinGeckoProvider({"BTC-USD": "bitcoin"}, session=session, sleep=lambda s: None)
+
+    observations = provider.fetch_history("BTC-USD", days=1)
+
+    assert len(observations) == 1

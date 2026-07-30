@@ -64,7 +64,9 @@ def engine(db_settings: DatabaseSettings) -> Iterator[Engine]:
     eng = make_engine(db_settings)
     Base.metadata.create_all(eng)
     with eng.begin() as connection:
-        ensure_partitions_covering(connection, datetime.now(UTC).date(), months_ahead=1)
+        today = datetime.now(UTC).date()
+        ensure_partitions_covering(connection, "raw_ticks", today, months_ahead=1)
+        ensure_partitions_covering(connection, "features", today, months_ahead=1)
     yield eng
     eng.dispose()
 
@@ -78,7 +80,9 @@ def session_factory(engine: Engine) -> sessionmaker[Session]:
 def _clean_database(engine: Engine) -> Iterator[None]:
     yield
     with engine.begin() as connection:
-        connection.execute(text("TRUNCATE TABLE raw_ticks, symbols RESTART IDENTITY CASCADE"))
+        connection.execute(
+            text("TRUNCATE TABLE raw_ticks, features, symbols RESTART IDENTITY CASCADE")
+        )
 
 
 @pytest.fixture

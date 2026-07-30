@@ -89,6 +89,45 @@ def test_idempotency_publish_same_envelope_twice_yields_one_row(
     assert row_count == 1
 
 
+def test_same_symbol_and_observed_at_with_different_message_id_still_collapses_to_one_row(
+    connection_manager: ConnectionManager, session_factory: sessionmaker[Session]
+) -> None:
+    """A provider can legitimately report the same ``observed_at`` twice
+    across separate poll cycles — a distinct ``message_id`` each time, but
+    the same ``(symbol_id, observed_at)``. That must no-op via the second
+    unique constraint, not raise an IntegrityError.
+    """
+    observed_at = datetime.now(UTC)
+
+    def _envelope_at(observed_at: datetime, price: str) -> TickEnvelope:
+        return TickEnvelope(
+            emitted_at=datetime.now(UTC),
+            symbol="BTC-USD",
+            payload=TickPayload(
+                price=Decimal(price), volume=Decimal("3.0"), provider_observed_at=observed_at
+            ),
+        )
+
+    publisher = Publisher(connection_manager)
+    publisher.publish(_envelope_at(observed_at, "100.50"))
+    publisher.publish(_envelope_at(observed_at, "101.00"))
+
+    channel = connection_manager.channel()
+    consumer = _consumer(connection_manager, session_factory)
+    for _ in range(2):
+        method, properties, body = channel.basic_get(QUEUE_PERSIST, auto_ack=False)
+        assert method is not None
+        consumer._on_message(channel, method, properties, body)
+
+    assert channel.basic_get(QUEUE_DEAD, auto_ack=True)[0] is None, (
+        "the second message must not dead-letter; a symbol/observed_at collision is a "
+        "legitimate no-op, not an error"
+    )
+    with session_factory() as session:
+        row_count = session.execute(select(func.count()).select_from(RawTick)).scalar_one()
+    assert row_count == 1
+
+
 def test_producer_to_consumer_to_postgres_row_appears(
     connection_manager: ConnectionManager, session_factory: sessionmaker[Session]
 ) -> None:

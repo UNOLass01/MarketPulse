@@ -67,7 +67,7 @@ def upgrade() -> None:
     # horizons is an operational task for Phase 4 (Airflow).
     connection = op.get_bind()
     start = _previous_month(datetime.now(UTC).date())
-    ensure_partitions_covering(connection, start, months_ahead=4)
+    ensure_partitions_covering(connection, "raw_ticks", start, months_ahead=4)
 
 
 def downgrade() -> None:

@@ -43,6 +43,20 @@ class RabbitMQSettings(BaseModel):
         return f"amqp://{self.user}:{self.password}@{self.host}:{self.port}{self.vhost}"
 
 
+class FeaturesSettings(BaseModel):
+    """Feature-layer window state tuning.
+
+    ``max_history_hours`` must exceed the widest feature lookback
+    (currently 24h, ``realised_vol_24h``) with real margin — see
+    ``features.windows.DEFAULT_MAX_HISTORY`` for why an exact match makes
+    that window's coverage check impossible to satisfy.
+    """
+
+    max_history_hours: float = 27.0
+    max_buffer_points: int = 10_000
+    gap_threshold_seconds: float = 120.0
+
+
 class Settings(BaseSettings):
     """Root application settings, assembled from ``MP_``-prefixed env vars."""
 
@@ -59,6 +73,7 @@ class Settings(BaseSettings):
 
     db: DatabaseSettings
     rabbitmq: RabbitMQSettings
+    features: FeaturesSettings = Field(default_factory=FeaturesSettings)
 
 
 @lru_cache
