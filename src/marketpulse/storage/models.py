@@ -16,12 +16,15 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Identity,
     Index,
+    Integer,
     Numeric,
     SmallInteger,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -108,3 +111,73 @@ class Feature(Base):
 # path (Phase 5); defined after the class so it can reference the mapped
 # column directly instead of a bare string.
 Index("ix_features_symbol_ts_desc", Feature.symbol_id, Feature.feature_ts.desc())
+
+
+class TrainingRun(Base):
+    """One ``ml.pipeline.run_training_pipeline`` invocation -- logged even
+    when the outcome is "did not promote" (phase-3 plan: "record rejections
+    too"). ``mlflow_run_id`` is the join key back to the tracking server;
+    everything here is a locally-queryable mirror of what that run logged,
+    not a replacement for it.
+    """
+
+    __tablename__ = "training_runs"
+    __table_args__ = (UniqueConstraint("mlflow_run_id", name="uq_training_runs_mlflow_run_id"),)
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    mlflow_run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    feature_set_version: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    config_version: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    horizon_minutes: Mapped[float] = mapped_column(Float, nullable=False)
+    theta: Mapped[float] = mapped_column(Float, nullable=False)
+    train_row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    validation_row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    test_row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    train_class_distribution: Mapped[dict[str, int]] = mapped_column(JSONB, nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    candidate_metrics: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    baseline_metrics: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    incumbent_metrics: Mapped[dict[str, object] | None] = mapped_column(JSONB)
+    promoted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
+    git_sha: Mapped[str | None] = mapped_column(String(40))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ModelVersion(Base):
+    """A registered MLflow model version, mirrored locally so promotion
+    history and reference feature distributions (Phase 6 drift depends on
+    the latter) are queryable without round-tripping to the tracking server.
+    """
+
+    __tablename__ = "model_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "mlflow_model_name", "mlflow_model_version", name="uq_model_versions_name_version"
+        ),
+        CheckConstraint(
+            "stage IN ('Staging', 'Production', 'Archived')", name="ck_model_versions_stage"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    training_run_id: Mapped[int] = mapped_column(ForeignKey("training_runs.id"), nullable=False)
+    mlflow_model_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    mlflow_model_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Populated only when this version is transitioned to Production -- the
+    # snapshot Phase 6's drift monitor compares live feature windows against.
+    reference_feature_stats: Mapped[dict[str, object] | None] = mapped_column(JSONB)
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+Index("ix_model_versions_stage", ModelVersion.stage)

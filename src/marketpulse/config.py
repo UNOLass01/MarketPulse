@@ -57,6 +57,21 @@ class FeaturesSettings(BaseModel):
     gap_threshold_seconds: float = 120.0
 
 
+class MLflowSettings(BaseModel):
+    """MLflow tracking + model registry connection settings.
+
+    ``tracking_uri`` points at the tracking server (Postgres-backed, with a
+    proxied S3/MinIO artifact store — see ``docker/docker-compose.yml``), never
+    at a bare local ``mlruns/`` directory: an untracked-server run can't be
+    resolved by ``registry_model_name``, and Phase 4/5 both depend on a
+    reachable server (CLAUDE.md: "never train without MLflow reachable").
+    """
+
+    tracking_uri: str = "http://localhost:5000"
+    registry_model_name: str = "marketpulse"
+    experiment_name: str = "marketpulse"
+
+
 class Settings(BaseSettings):
     """Root application settings, assembled from ``MP_``-prefixed env vars."""
 
@@ -74,6 +89,7 @@ class Settings(BaseSettings):
     db: DatabaseSettings
     rabbitmq: RabbitMQSettings
     features: FeaturesSettings = Field(default_factory=FeaturesSettings)
+    mlflow: MLflowSettings = Field(default_factory=MLflowSettings)
 
 
 @lru_cache

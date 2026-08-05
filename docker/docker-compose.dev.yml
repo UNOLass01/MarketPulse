@@ -16,3 +16,12 @@ services:
     ports:
       - "5672:5672"   # AMQP
       - "15672:15672" # management UI
+
+  minio:
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # console
+
+  mlflow:
+    ports:
+      - "5000:5000" # tracking UI + API

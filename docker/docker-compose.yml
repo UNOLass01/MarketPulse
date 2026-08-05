@@ -8,8 +8,12 @@ services:
       POSTGRES_USER: ${MP_DB__USER:-marketpulse}
       POSTGRES_PASSWORD: ${MP_DB__PASSWORD:-marketpulse}
       POSTGRES_DB: ${MP_DB__NAME:-marketpulse}
+      # Read by docker/init/001-create-mlflow-db.sh, run once against an
+      # empty volume -- MLflow gets its own database, never ${MP_DB__NAME}.
+      MLFLOW_DB_NAME: ${MP_MLFLOW_DB__NAME:-mlflow}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${MP_DB__USER:-marketpulse} -d ${MP_DB__NAME:-marketpulse}"]
       interval: 5s
@@ -31,6 +35,68 @@ services:
       timeout: 5s
       retries: 10
 
+  # S3-compatible artifact store for MLflow (real S3/R2 in prod -- config
+  # only, no code change: see MLFLOW_ARTIFACTS_DESTINATION below).
+  minio:
+    image: minio/minio:RELEASE.2024-05-10T01-41-38Z
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MP_MINIO__ROOT_USER:-marketpulse}
+      MINIO_ROOT_PASSWORD: ${MP_MINIO__ROOT_PASSWORD:-marketpulse-minio}
+    command: ["server", "/data", "--console-address", ":9001"]
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: creates the MLflow artifact bucket, then exits. `mlflow`
+  # depends on this completing successfully, not just on minio being up.
+  minio-init:
+    image: minio/mc:RELEASE.2024-01-13T08-44-48Z
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command:
+      - >
+        mc alias set local http://minio:9000 ${MP_MINIO__ROOT_USER:-marketpulse} ${MP_MINIO__ROOT_PASSWORD:-marketpulse-minio} &&
+        mc mb --ignore-existing local/${MP_MINIO__BUCKET:-mlflow}
+
+  mlflow:
+    build:
+      context: ..
+      dockerfile: docker/mlflow.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql://${MP_DB__USER:-marketpulse}:${MP_DB__PASSWORD:-marketpulse}@postgres:5432/${MP_MLFLOW_DB__NAME:-mlflow}
+      MLFLOW_ARTIFACTS_DESTINATION: s3://${MP_MINIO__BUCKET:-mlflow}/
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MP_MINIO__ROOT_USER:-marketpulse}
+      AWS_SECRET_ACCESS_KEY: ${MP_MINIO__ROOT_PASSWORD:-marketpulse-minio}
+    healthcheck:
+      # python, not wget/curl -- the base image (python:3.11-slim) doesn't
+      # carry either.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   postgres_data:
   rabbitmq_data:
+  minio_data:

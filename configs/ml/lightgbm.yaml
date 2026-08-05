@@ -1,0 +1,47 @@
+# Versioned training hyperparameters for the LightGBM direction classifier.
+#
+# `config_version` is logged to MLflow on every run (see ml.pipeline). Bump it
+# whenever this file changes -- `horizon_minutes` and `theta_quantile` change
+# the labeling problem itself (CLAUDE.md: "H and theta are logged
+# hyperparameters -- changing either changes the problem"), and every other
+# field changes what the model learns from a fixed problem. Never hardcode
+# these in train.py; this file is the single source of truth.
+config_version: 1
+
+labeling:
+  # Forward-return horizon. Must be >= the feature pipeline's tick cadence by
+  # a wide margin so a labelable "future" tick reliably exists.
+  horizon_minutes: 15
+  # theta (the UP/DOWN deadband) is derived from the ~0.4 quantile of the
+  # empirical |forward return| distribution at training time, not picked by
+  # hand -- set explicitly only to reproduce a specific past run.
+  theta_quantile: 0.4
+  theta: null
+
+split:
+  train_frac: 0.70
+  val_frac: 0.15
+  # test_frac is implied: 1 - train_frac - val_frac
+  min_rows_per_split: 200
+  min_class_frac: 0.05
+
+lightgbm:
+  objective: multiclass
+  learning_rate: 0.05
+  num_leaves: 31
+  max_depth: -1
+  min_data_in_leaf: 20
+  feature_fraction: 0.9
+  bagging_fraction: 0.8
+  bagging_freq: 5
+  lambda_l1: 0.0
+  lambda_l2: 0.0
+  num_boost_round: 500
+  early_stopping_rounds: 30
+  seed: 42
+  verbosity: -1
+
+evaluation:
+  # theta_quantile for the random-stratified baseline's own RNG seed.
+  random_baseline_seed: 42
+  time_buckets: 5
