@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -58,6 +58,36 @@ def list_recent_ticks(session: Session, symbol_id: int, since: datetime) -> list
     stmt = (
         select(RawTick)
         .where(RawTick.symbol_id == symbol_id, RawTick.observed_at >= since)
+        .order_by(RawTick.observed_at.asc())
+    )
+    return list(session.execute(stmt).scalars())
+
+
+def latest_observed_at(session: Session, symbol_id: int) -> datetime | None:
+    """Most recent ``observed_at`` for ``symbol_id``, or ``None`` if the
+    symbol has no ticks yet -- ``monitoring.quality``'s freshness check.
+    """
+    stmt = select(func.max(RawTick.observed_at)).where(RawTick.symbol_id == symbol_id)
+    return session.execute(stmt).scalar_one_or_none()
+
+
+def list_ticks_in_range(
+    session: Session, symbol_id: int, start: datetime, end: datetime
+) -> list[RawTick]:
+    """Ascending ticks for ``symbol_id`` in ``[start, end)`` — used by
+    ``jobs.backfill`` to replay already-ingested history through the feature
+    pipeline. Bounded on both ends (unlike :func:`list_recent_ticks`) so a
+    chunked backfill's memory stays proportional to one chunk, not the whole
+    requested range. Filters on ``observed_at``, never ``ingested_at``
+    (CLAUDE.md rule #6).
+    """
+    stmt = (
+        select(RawTick)
+        .where(
+            RawTick.symbol_id == symbol_id,
+            RawTick.observed_at >= start,
+            RawTick.observed_at < end,
+        )
         .order_by(RawTick.observed_at.asc())
     )
     return list(session.execute(stmt).scalars())

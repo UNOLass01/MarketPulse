@@ -2,10 +2,13 @@
 (``raw_ticks`` on ``observed_at``, ``features`` on ``feature_ts``).
 """
 
+import re
 from datetime import date
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
+
+_PARTITION_NAME_RE = re.compile(r"^(?P<table>.+)_(?P<year>\d{4})_(?P<month>\d{2})$")
 
 
 def _partition_name(table: str, year: int, month: int) -> str:
@@ -41,3 +44,41 @@ def ensure_partitions_covering(
     for _ in range(months_ahead + 1):
         ensure_partition(connection, table, year, month)
         year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+
+
+def list_partitions(connection: Connection, table: str) -> list[tuple[int, int]]:
+    """``(year, month)`` for every existing partition of ``table``, ascending.
+
+    Reads structure via ``pg_inherits`` (the real source of truth for which
+    child tables exist), not just by pattern-matching a naming convention —
+    but the year/month themselves are still parsed from the name, since that
+    encoding is this project's own and Postgres doesn't track partition
+    bounds as a queryable (year, month) pair.
+    """
+    rows = connection.execute(
+        text(
+            "SELECT child.relname FROM pg_inherits "
+            "JOIN pg_class parent ON pg_inherits.inhparent = parent.oid "
+            "JOIN pg_class child ON pg_inherits.inhrelid = child.oid "
+            "WHERE parent.relname = :table"
+        ),
+        {"table": table},
+    ).all()
+
+    partitions = []
+    for (name,) in rows:
+        match = _PARTITION_NAME_RE.match(name)
+        if match and match.group("table") == table:
+            partitions.append((int(match.group("year")), int(match.group("month"))))
+    return sorted(partitions)
+
+
+def drop_partition(connection: Connection, table: str, year: int, month: int) -> None:
+    """Drop ``table``'s partition for ``year``/``month`` — and its data —
+    outright. Only ever call this after the caller has independently
+    verified the data made it to durable storage elsewhere (see
+    ``storage.archival``); this function itself has no way to know that and
+    does not check.
+    """
+    name = _partition_name(table, year, month)
+    connection.execute(text(f'DROP TABLE IF EXISTS "{name}"'))

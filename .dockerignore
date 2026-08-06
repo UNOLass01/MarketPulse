@@ -15,6 +15,7 @@ mlartifacts
 docs
 claude
 *.md
+!README.md
 .env
 .env.*
 !.env.example

@@ -1,5 +1,71 @@
 name: marketpulse
 
+# Shared config for the four Airflow processes (Phase 4). Airflow 3's
+# architecture splits the old monolithic webserver+scheduler into separate
+# scheduler / api-server / dag-processor components; LocalExecutor (per the
+# phase-4 plan: "not Celery -- no benefit at this concurrency") runs tasks
+# inside the scheduler process itself, so no separate worker service exists.
+x-airflow-common: &airflow-common
+  build:
+    context: ..
+    dockerfile: docker/airflow.Dockerfile
+  entrypoint: ["/bin/bash", "-c"]
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${MP_DB__USER:-marketpulse}:${MP_DB__PASSWORD:-marketpulse}@postgres:5432/${MP_AIRFLOW_DB__NAME:-airflow}
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: utc
+    # Dev-only defaults live in .env.example, same trust level as
+    # MP_DB__PASSWORD's committed default -- rotate both for anything beyond
+    # a local machine. CLAUDE.md rule #12: still env-sourced, never hardcoded
+    # here.
+    AIRFLOW__CORE__FERNET_KEY: ${MP_AIRFLOW__FERNET_KEY:?set MP_AIRFLOW__FERNET_KEY -- see .env.example}
+    AIRFLOW__API__SECRET_KEY: ${MP_AIRFLOW__SECRET_KEY:?set MP_AIRFLOW__SECRET_KEY -- see .env.example}
+    # marketpulse's own settings (config.get_settings(), read by every DAG
+    # task callable) -- in-network hostnames/ports, not .env's host-mapped
+    # ones. Mirrors how the mlflow service below sets its own env directly
+    # rather than reusing .env's localhost-oriented defaults. No Airflow
+    # Connections/Variables duplicate this: CLAUDE.md rule #12 wants one
+    # source of truth for config, and that's already Settings via MP_* env,
+    # the same as every other marketpulse process.
+    MP_ENV: local
+    MP_LOG_LEVEL: INFO
+    MP_DB__HOST: postgres
+    MP_DB__PORT: "5432"
+    MP_DB__USER: ${MP_DB__USER:-marketpulse}
+    MP_DB__PASSWORD: ${MP_DB__PASSWORD:-marketpulse}
+    MP_DB__NAME: ${MP_DB__NAME:-marketpulse}
+    MP_RABBITMQ__HOST: rabbitmq
+    MP_RABBITMQ__PORT: "5672"
+    MP_RABBITMQ__USER: ${MP_RABBITMQ__USER:-marketpulse}
+    MP_RABBITMQ__PASSWORD: ${MP_RABBITMQ__PASSWORD:-marketpulse}
+    MP_MLFLOW__TRACKING_URI: http://mlflow:5000
+    MP_MLFLOW__REGISTRY_MODEL_NAME: ${MP_MLFLOW__REGISTRY_MODEL_NAME:-marketpulse}
+    MP_MLFLOW__EXPERIMENT_NAME: ${MP_MLFLOW__EXPERIMENT_NAME:-marketpulse}
+    MP_MONITORING__FRESHNESS_MAX_LAG_MINUTES: ${MP_MONITORING__FRESHNESS_MAX_LAG_MINUTES:-10}
+    MP_MONITORING__EXPECTED_TICK_INTERVAL_SECONDS: ${MP_MONITORING__EXPECTED_TICK_INTERVAL_SECONDS:-10}
+    MP_MONITORING__COMPLETENESS_WINDOW_HOURS: ${MP_MONITORING__COMPLETENESS_WINDOW_HOURS:-1}
+    MP_MONITORING__COMPLETENESS_MIN_RATIO: ${MP_MONITORING__COMPLETENESS_MIN_RATIO:-0.95}
+    MP_MONITORING__DISTRIBUTION_WINDOW_HOURS: ${MP_MONITORING__DISTRIBUTION_WINDOW_HOURS:-1}
+    MP_MONITORING__DISTRIBUTION_REFERENCE_WINDOW_HOURS: ${MP_MONITORING__DISTRIBUTION_REFERENCE_WINDOW_HOURS:-24}
+    MP_MONITORING__DISTRIBUTION_MAX_RELATIVE_SHIFT: ${MP_MONITORING__DISTRIBUTION_MAX_RELATIVE_SHIFT:-0.5}
+    MP_OBJECT_STORE__ENDPOINT_URL: http://minio:9000
+    MP_OBJECT_STORE__ACCESS_KEY: ${MP_MINIO__ROOT_USER:-marketpulse}
+    MP_OBJECT_STORE__SECRET_KEY: ${MP_MINIO__ROOT_PASSWORD:-marketpulse-minio}
+    MP_OBJECT_STORE__ARCHIVE_BUCKET: ${MP_OBJECT_STORE__ARCHIVE_BUCKET:-marketpulse-archive}
+    MP_OBJECT_STORE__HOT_RETENTION_MONTHS: ${MP_OBJECT_STORE__HOT_RETENTION_MONTHS:-6}
+  volumes:
+    - ../airflow/dags:/opt/airflow/dags:ro
+    - airflow_logs:/opt/airflow/logs
+  depends_on:
+    postgres:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+    minio-init:
+      condition: service_completed_successfully
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -8,9 +74,11 @@ services:
       POSTGRES_USER: ${MP_DB__USER:-marketpulse}
       POSTGRES_PASSWORD: ${MP_DB__PASSWORD:-marketpulse}
       POSTGRES_DB: ${MP_DB__NAME:-marketpulse}
-      # Read by docker/init/001-create-mlflow-db.sh, run once against an
-      # empty volume -- MLflow gets its own database, never ${MP_DB__NAME}.
+      # Read by docker/init/00N-create-*-db.sh, each run once against an
+      # empty volume -- MLflow and Airflow each get their own database,
+      # never ${MP_DB__NAME}.
       MLFLOW_DB_NAME: ${MP_MLFLOW_DB__NAME:-mlflow}
+      AIRFLOW_DB_NAME: ${MP_AIRFLOW_DB__NAME:-airflow}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init:/docker-entrypoint-initdb.d:ro
@@ -64,7 +132,8 @@ services:
     command:
       - >
         mc alias set local http://minio:9000 ${MP_MINIO__ROOT_USER:-marketpulse} ${MP_MINIO__ROOT_PASSWORD:-marketpulse-minio} &&
-        mc mb --ignore-existing local/${MP_MINIO__BUCKET:-mlflow}
+        mc mb --ignore-existing local/${MP_MINIO__BUCKET:-mlflow} &&
+        mc mb --ignore-existing local/${MP_OBJECT_STORE__ARCHIVE_BUCKET:-marketpulse-archive}
 
   mlflow:
     build:
@@ -96,7 +165,74 @@ services:
       timeout: 5s
       retries: 10
 
+  # One-shot: metadata DB migration. Every other Airflow service waits on
+  # this completing, not just on postgres being up -- a scheduler racing an
+  # un-migrated metadata DB is a classic first-boot failure mode.
+  airflow-init:
+    <<: *airflow-common
+    restart: "no"
+    command: ["airflow db migrate"]
+    mem_limit: 1g
+    cpus: "1.0"
+
+  # Runs tasks itself under LocalExecutor -- give it real headroom, not the
+  # 1g the lighter API/DAG-processor services get below (phase-4 plan: "the
+  # scheduler peaks during training; the host is shared").
+  airflow-scheduler:
+    <<: *airflow-common
+    restart: unless-stopped
+    command: ["airflow scheduler"]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    mem_limit: 4g
+    cpus: "2.0"
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$$HOSTNAME\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # Airflow 3 parses DAG files in its own process, isolated from the
+  # scheduler -- a DAG-file exception can't take the scheduler down with it.
+  airflow-dag-processor:
+    <<: *airflow-common
+    restart: unless-stopped
+    command: ["airflow dag-processor"]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    mem_limit: 1g
+    cpus: "1.0"
+
+  airflow-apiserver:
+    <<: *airflow-common
+    restart: unless-stopped
+    command: ["airflow api-server"]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    mem_limit: 1g
+    cpus: "1.0"
+    healthcheck:
+      # TCP-level, not an HTTP path -- Airflow 3's API server exposes its
+      # health route under a versioned prefix that's still settling; a port
+      # check is the stable part.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; socket.create_connection(('localhost', 8080), timeout=3).close()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
 volumes:
   postgres_data:
   rabbitmq_data:
   minio_data:
+  airflow_logs:

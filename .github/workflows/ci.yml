@@ -21,8 +21,8 @@ jobs:
 
       - name: Lint
         run: |
-          ruff check src tests
-          black --check src tests
+          ruff check src tests airflow
+          black --check src tests airflow
 
       - name: Typecheck
         run: mypy src

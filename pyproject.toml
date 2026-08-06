@@ -28,6 +28,10 @@ dependencies = [
     # deliberately -- bump both together and re-run tests/unit/test_ml_registry.py.
     "mlflow==3.15.1",
     "pyyaml>=6.0",
+    # storage.archival: exports partitions to Parquet and uploads to the
+    # MinIO/S3-compatible archive bucket -- see docs/plan/phase-4-airflow.md.
+    "boto3>=1.34",
+    "pyarrow>=16.0",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +47,17 @@ dev = [
     "types-requests>=2.31",
     "types-PyYAML>=6.0",
     "pandas-stubs>=2.2",
+    "boto3-stubs[s3]>=1.34",
+    # Only ever imported by tests/unit/test_dags.py (parses every DAG file --
+    # phase-4 plan: "a broken DAG silently disables scheduling"). The actual
+    # scheduler/webserver run in their own container (docker/airflow.Dockerfile),
+    # pinned separately there -- keep the two versions in sync by hand.
+    # 3.x, not 2.x: apache-airflow-core only added sqlalchemy>=2.0 support in
+    # 3.3.0 (2.x and earlier 3.x are pinned to sqlalchemy<2.0, which directly
+    # conflicts with this project's own sqlalchemy>=2.0 -- both marketpulse
+    # and Airflow have to import cleanly in the same environment inside
+    # docker/airflow.Dockerfile, not just here). See ADR 0003.
+    "apache-airflow==3.3.0",
 ]
 
 [tool.hatch.build.targets.wheel]

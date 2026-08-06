@@ -30,3 +30,12 @@ class ConnectionUnavailableError(TransientError):
 
 class SchemaValidationError(PermanentError):
     """A message or record did not conform to its contract."""
+
+
+class ArchivalVerificationError(TransientError):
+    """A partition export's row count or checksum didn't verify against
+    object storage after upload. Transient, not permanent — an upload can
+    fail to be a bit-for-bit fresh export for reasons (network corruption,
+    a concurrent write mid-export) that a retry can resolve. Raising this
+    must always happen *before* the partition is dropped, never after.
+    """

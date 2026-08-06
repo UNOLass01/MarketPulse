@@ -83,7 +83,8 @@ def _clean_database(engine: Engine) -> Iterator[None]:
         connection.execute(
             text(
                 "TRUNCATE TABLE raw_ticks, features, symbols, "
-                "training_runs, model_versions RESTART IDENTITY CASCADE"
+                "training_runs, model_versions, quality_checks, "
+                "archived_partitions RESTART IDENTITY CASCADE"
             )
         )
 

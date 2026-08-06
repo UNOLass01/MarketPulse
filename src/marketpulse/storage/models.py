@@ -181,3 +181,61 @@ class ModelVersion(Base):
 
 
 Index("ix_model_versions_stage", ModelVersion.stage)
+
+
+class QualityCheck(Base):
+    """One data-quality check result (``monitoring.quality``, Phase 4).
+
+    ``symbol`` is null for checks that aren't per-symbol (none currently
+    are, but the column stays nullable rather than forcing a sentinel like
+    ``"ALL"`` — CLAUDE.md rule #7's "never fake a value" spirit applies here
+    too). ``dag_model_retraining``'s gate reads the most recent row per
+    ``check_name`` and requires all of them ``passed``.
+    """
+
+    __tablename__ = "quality_checks"
+    __table_args__ = (
+        CheckConstraint(
+            "check_name IN ('freshness', 'completeness', 'validity', 'distribution')",
+            name="ck_quality_checks_check_name",
+        ),
+        Index("ix_quality_checks_name_checked_at", "check_name", "checked_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    check_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    symbol: Mapped[str | None] = mapped_column(String(20))
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    details: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ArchivedPartition(Base):
+    """Record of one ``dag_data_archival`` export -- the audit trail proving
+    a dropped partition's data really did make it to object storage first.
+    Written only after the verify step (row count + checksum) passes; a
+    partition drop with no corresponding row here is the signal something
+    went wrong (phase-4 plan: "the verify step is non-negotiable").
+    """
+
+    __tablename__ = "archived_partitions"
+    __table_args__ = (
+        UniqueConstraint(
+            "table_name", "partition_year", "partition_month", name="uq_archived_partitions"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    table_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    partition_year: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    partition_month: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    object_key: Mapped[str] = mapped_column(Text, nullable=False)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    archived_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

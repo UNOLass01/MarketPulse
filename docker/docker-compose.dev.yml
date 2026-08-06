@@ -25,3 +25,7 @@ services:
   mlflow:
     ports:
       - "5000:5000" # tracking UI + API
+
+  airflow-apiserver:
+    ports:
+      - "8080:8080" # Airflow UI + REST API

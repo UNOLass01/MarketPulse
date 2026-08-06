@@ -57,6 +57,43 @@ class FeaturesSettings(BaseModel):
     gap_threshold_seconds: float = 120.0
 
 
+class MonitoringSettings(BaseModel):
+    """Thresholds for ``monitoring.quality``'s data-quality checks (Phase 4).
+
+    Deliberately simple sanity checks, not drift detection — PSI-based drift
+    monitoring against a promoted model's reference distribution is Phase 6's
+    job (see ``docs/plan/phase-6-monitoring.md``). This only catches "a
+    feature's mean moved by an implausible amount", not a rigorous
+    distribution-shift statistic.
+    """
+
+    freshness_max_lag_minutes: float = 10.0
+    expected_tick_interval_seconds: float = 10.0
+    completeness_window_hours: float = 1.0
+    completeness_min_ratio: float = Field(default=0.95, gt=0, le=1)
+    distribution_window_hours: float = 1.0
+    distribution_reference_window_hours: float = 24.0
+    distribution_max_relative_shift: float = Field(default=0.5, gt=0)
+
+
+class ObjectStorageSettings(BaseModel):
+    """S3-compatible object storage the app talks to directly (archival
+    exports). Distinct from MLflow's artifact store: MLflow's tracking
+    server proxies artifact reads/writes so the app never needs S3
+    credentials for that path (see ``MLflowSettings``) — this is only for
+    ``storage.archival``, which writes Parquet exports straight to the
+    bucket itself.
+    """
+
+    endpoint_url: str = "http://localhost:9000"
+    access_key: str = "marketpulse"
+    secret_key: str = "marketpulse-minio"
+    archive_bucket: str = "marketpulse-archive"
+    # dag_data_archival: a partition older than this many months is
+    # eligible for export + drop. See storage.archival.archivable_partitions.
+    hot_retention_months: int = Field(default=6, gt=0)
+
+
 class MLflowSettings(BaseModel):
     """MLflow tracking + model registry connection settings.
 
@@ -90,6 +127,8 @@ class Settings(BaseSettings):
     rabbitmq: RabbitMQSettings
     features: FeaturesSettings = Field(default_factory=FeaturesSettings)
     mlflow: MLflowSettings = Field(default_factory=MLflowSettings)
+    monitoring: MonitoringSettings = Field(default_factory=MonitoringSettings)
+    object_store: ObjectStorageSettings = Field(default_factory=ObjectStorageSettings)
 
 
 @lru_cache

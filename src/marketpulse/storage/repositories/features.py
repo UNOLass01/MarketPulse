@@ -1,5 +1,7 @@
 """Idempotent feature vector persistence + latest-per-symbol lookup."""
 
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
@@ -45,3 +47,26 @@ def latest_feature_vector(
         .limit(1)
     )
     return session.execute(stmt).scalar_one_or_none()
+
+
+def list_feature_rows_in_range(
+    session: Session,
+    symbol_id: int,
+    feature_set_version: int,
+    start: datetime,
+    end: datetime,
+) -> list[Feature]:
+    """Ascending feature rows for ``symbol_id`` in ``[start, end)`` —
+    ``monitoring.quality``'s validity + distribution-sanity checks.
+    """
+    stmt = (
+        select(Feature)
+        .where(
+            Feature.symbol_id == symbol_id,
+            Feature.feature_set_version == feature_set_version,
+            Feature.feature_ts >= start,
+            Feature.feature_ts < end,
+        )
+        .order_by(Feature.feature_ts.asc())
+    )
+    return list(session.execute(stmt).scalars())
