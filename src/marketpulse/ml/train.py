@@ -50,7 +50,7 @@ def class_weights(y: np.ndarray) -> np.ndarray:
     counts = np.bincount(y, minlength=len(LABELS)).astype(float)
     counts[counts == 0] = 1.0
     weight_by_class = counts.sum() / (len(LABELS) * counts)
-    return weight_by_class[y]
+    return np.asarray(weight_by_class[y])
 
 
 def train_model(dataset: Dataset, config: LightGBMConfig) -> TrainedModel:
