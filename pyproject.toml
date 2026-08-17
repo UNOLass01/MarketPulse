@@ -158,6 +158,13 @@ testpaths = ["tests"]
 # module a unique name from its full path -- the fix pytest recommends,
 # without scattering __init__.py files through the test tree.
 addopts = "-ra --import-mode=importlib"
+# The repo root, so `import services.api...` resolves in tests. `services/`
+# is deliberately not part of the installed package (it is thin entrypoints,
+# not library code), and importlib import mode does not put rootdir on
+# sys.path the way the legacy mode did. Running `python -m pytest` masked
+# this locally -- that form injects the cwd, a bare `pytest` does not, which
+# is exactly the difference between a laptop and CI.
+pythonpath = ["."]
 markers = [
     "unit: fast, no I/O",
     "contract: schema/contract tests, no I/O",

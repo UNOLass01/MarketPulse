@@ -15,22 +15,46 @@ Phase-by-phase build plan: [`docs/plan/`](docs/plan/).
 
 ## Status
 
-Phase 0 (Foundations) — in progress. See [`docs/plan/phase-0-foundations.md`](docs/plan/phase-0-foundations.md)
-and the phase table in `CLAUDE.md` for what's next.
+Phases 0–6 complete; Phase 7 (deploy + docs) is next. See the phase table in
+`CLAUDE.md` and the per-phase plans in [`docs/plan/`](docs/plan/).
 
 ## Quickstart
 
 ```bash
 cp .env.example .env        # adjust values if needed
 make install                # pip install -e ".[dev]"
-make up                     # start Postgres + RabbitMQ (docker compose)
+make up                     # start the stack (docker compose)
 make migrate                # apply DB schema
 make test                   # unit + contract tests (fast, no I/O)
+```
+
+Once the stack is up:
+
+| What | Where |
+|---|---|
+| Prediction API + generated OpenAPI docs | <http://localhost:8000/docs> |
+| Monitoring dashboard (read-only) | <http://localhost:8501> |
+| Airflow | <http://localhost:8080> |
+| MLflow | <http://localhost:5000> |
+| RabbitMQ management | <http://localhost:15672> |
+
+The producer and consumer run as plain processes rather than compose services:
+
+```bash
+python -m services.producer.main
+python -m services.consumer.main
 ```
 
 Other useful targets: `make down`, `make reset` (drops volumes), `make logs s=<service>`,
 `make lint`, `make typecheck`, `make test-int`, `make test-e2e`. Full list in the `Makefile`
 and in `CLAUDE.md`.
+
+## Operations
+
+Alerts name their runbook, and the runbooks live in [`docs/runbooks/`](docs/runbooks/):
+[consumer lag / stale features](docs/runbooks/consumer_lag.md),
+[model rollback](docs/runbooks/model_rollback.md),
+[DLQ triage](docs/runbooks/dlq_triage.md).
 
 ## Repository layout
 

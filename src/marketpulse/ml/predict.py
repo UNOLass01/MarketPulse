@@ -257,7 +257,7 @@ def probabilities_to_mapping(row: Sequence[float]) -> dict[str, float]:
 
 
 def _as_proba_matrix(raw: Any, *, n_rows: int) -> np.ndarray:
-    matrix = np.asarray(raw, dtype=float)
+    matrix: np.ndarray = np.asarray(raw, dtype=float)
     if matrix.ndim == 1:
         matrix = matrix.reshape(n_rows, -1)
     if matrix.shape != (n_rows, len(LABELS)):

@@ -99,7 +99,11 @@ def _clean(values: Sequence[float | None]) -> np.ndarray:
     is really just a cold start.
     """
     array = np.asarray([v for v in values if v is not None], dtype=float)
-    return array[np.isfinite(array)]
+    # Annotated rather than returned inline: boolean-mask indexing is typed
+    # as Any by the numpy stubs shipped for Python 3.11, which strict mode
+    # rejects as a no-any-return.
+    finite: np.ndarray = array[np.isfinite(array)]
+    return finite
 
 
 def population_stability_index(
