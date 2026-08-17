@@ -20,6 +20,7 @@ from marketpulse.config import get_settings
 from marketpulse.contracts.messages import TickEnvelope, TickPayload
 from marketpulse.features.pipeline import compute_feature_vector
 from marketpulse.features.windows import Observation, WindowStore
+from marketpulse.ingestion.providers.base import Observation as ProviderObservation
 from marketpulse.ingestion.providers.coingecko import CoinGeckoProvider
 from marketpulse.logging import get_logger
 from marketpulse.storage.engine import make_engine, make_session_factory, session_scope
@@ -44,7 +45,11 @@ def _parse_args() -> argparse.Namespace:
 
 def _seed_symbol(
     symbol: str,
-    observations: list[Observation],
+    # Provider observations (Decimal price/volume), not the float-valued
+    # ``features.windows.Observation`` this converts them into below. Two
+    # different types share the name; keeping both imports explicit is what
+    # makes the conversion at the window.push() call visible.
+    observations: list[ProviderObservation],
     *,
     session_factory: sessionmaker[Session],
     max_history: timedelta,

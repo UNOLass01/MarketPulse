@@ -1,31 +1,74 @@
-name: CI
+﻿name: CI
 
 on:
   pull_request:
   push:
     branches: [main]
 
+# A push that supersedes an in-flight run makes the older run's result
+# meaningless -- cancel it rather than paying for two answers about two
+# different commits.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  ci:
+  # Fast feedback: everything that needs no Docker. Fails in ~1 minute on a
+  # typo, instead of after the integration tier has spun up containers.
+  lint-and-unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install
         run: pip install -e ".[dev]"
 
+      # LINT_PATHS/TYPE_PATHS are defined once in the Makefile and reused
+      # here, so a directory added to one is never silently missing from the
+      # other -- services/ and scripts/ were checked by neither until Phase 5.
       - name: Lint
-        run: |
-          ruff check src tests airflow
-          black --check src tests airflow
+        run: make lint
 
       - name: Typecheck
-        run: mypy src
+        run: make typecheck
 
       - name: Unit + contract tests
-        run: pytest tests/unit tests/contract --cov --cov-report=term-missing
+        run: make test
+
+  # The integration tier had never run in CI at all, across four phases of
+  # tests written specifically to exercise real Postgres and RabbitMQ -- so
+  # the error-classification, idempotency, and horizon-lag guarantees were
+  # only ever verified on someone's laptop. GitHub's ubuntu runners ship
+  # Docker, which is all testcontainers needs.
+  #
+  # The coverage floor lives here rather than in the fast job because it
+  # spans both tiers (see the Makefile's test-ci comment).
+  integration:
+    runs-on: ubuntu-latest
+    # Independent of lint-and-unit on purpose: a formatting nit should not
+    # hide an integration failure, and both results are more useful than one
+    # serialised behind the other.
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Unit + contract + integration, with the coverage gate
+        run: make test-ci
+        env:
+          # testcontainers' own reaper container adds a container start to
+          # every session for cleanup this ephemeral runner does not need.
+          TESTCONTAINERS_RYUK_DISABLED: "true"

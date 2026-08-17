@@ -1,4 +1,11 @@
-.PHONY: up down reset logs test test-int test-e2e lint format typecheck migrate revision seed install
+.PHONY: up down reset logs test test-ci test-int test-e2e lint format typecheck migrate revision seed install
+
+# Everything that is Python and ours. services/ and scripts/ were excluded
+# until Phase 5 -- which is exactly how a whole FastAPI app can land in
+# services/api/ without ruff, black, or mypy ever looking at it. CI runs
+# these same targets, so the two can't drift apart.
+LINT_PATHS := src services scripts tests airflow
+TYPE_PATHS := src services scripts
 
 # --env-file .env, not --project-directory: without either, Compose looks
 # for .env next to the *first* -f file (docker/.env), not the repo root --
@@ -31,6 +38,27 @@ logs:
 test:
 	pytest tests/unit tests/contract
 
+# Every tier that can run without compose, plus the coverage floor. The
+# floor is scoped to features/ and ml/ (CLAUDE.md: "blanket repo-wide
+# coverage is not a goal") -- a repo-wide number would be satisfiable by
+# testing wiring instead of the leakage- and promotion-sensitive code that
+# actually matters.
+#
+# Unit and integration run together, not separately: ml/pipeline.py is
+# orchestration whose correctness is only demonstrated by the integration
+# tier, so a unit-only measurement reports it as 0% and the gate becomes a
+# number nobody can hit honestly.
+#
+# The include patterns need the leading `*/` -- coverage's `*` does not
+# match a path separator, so `*marketpulse/ml/*` silently matches nothing
+# and the gate passes on an empty report.
+test-ci:
+	pytest tests/unit tests/contract tests/integration \
+	  --cov=marketpulse --cov-report=term-missing
+	coverage report \
+	  --include='*/marketpulse/features/*,*/marketpulse/ml/*' \
+	  --fail-under=85
+
 test-int:
 	pytest tests/integration
 
@@ -38,20 +66,20 @@ test-e2e:
 	pytest tests/e2e
 
 lint:
-	ruff check src tests airflow
-	black --check src tests airflow
+	ruff check $(LINT_PATHS)
+	black --check $(LINT_PATHS)
 
 format:
-	ruff check --fix src tests airflow
-	black src tests airflow
+	ruff check --fix $(LINT_PATHS)
+	black $(LINT_PATHS)
 
-# airflow/dags is intentionally excluded: pyproject.toml's [tool.mypy]
-# scopes strict checking to the marketpulse package, and Airflow's TaskFlow
-# decorators aren't a great fit for that same strictness. DAG correctness is
-# covered instead by tests/unit/test_dags.py (parses every DAG file, no
-# import errors, cross-cutting rules) per the phase-4 plan.
+# airflow/dags is intentionally excluded: Airflow's TaskFlow decorators
+# aren't a great fit for strict mode. DAG correctness is covered instead by
+# tests/unit/test_dags.py (parses every DAG file, no import errors,
+# cross-cutting rules) per the phase-4 plan. services/ and scripts/ are
+# *not* exempt -- they were only ever excluded by omission.
 typecheck:
-	mypy src
+	mypy $(TYPE_PATHS)
 
 migrate:
 	alembic upgrade head
