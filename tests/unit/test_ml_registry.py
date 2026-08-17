@@ -14,12 +14,15 @@ import pandas as pd
 import pytest
 
 from marketpulse.config import MLflowSettings
+from marketpulse.features.registry import FEATURE_NAMES, FEATURE_SET_VERSION
+from marketpulse.ml.predict import ModelSignatureMismatchError
 from marketpulse.ml.registry import (
     STAGE_PRODUCTION,
     STAGE_STAGING,
     ArtifactNotPersistedError,
     configure,
     get_stage_version,
+    load_production_bundle,
     load_production_model,
     log_model,
     start_run,
@@ -216,3 +219,118 @@ def test_rejected_candidate_can_be_kept_in_staging_without_promotion(mlflow_env:
 
     assert get_stage_version(client, settings.registry_model_name, STAGE_STAGING) == "1"
     assert get_stage_version(client, settings.registry_model_name, STAGE_PRODUCTION) is None
+
+
+# --- serving: load_production_bundle (Phase 5) -------------------------------
+#
+# This is the seam the phase-5 exit criterion runs through -- "promotion
+# changes model_version with no redeploy" is exactly this function returning a
+# different LoadedModel on the next poll. It is also the only place the
+# serving-time schema guard gets its numbers, so both the happy path and each
+# refusal are pinned here rather than inferred from the API tests.
+
+
+def _registry_booster(seed: int = 0) -> tuple[lgb.Booster, pd.DataFrame]:
+    """A booster whose columns really are ``features.registry.FEATURE_NAMES``.
+
+    ``_tiny_booster``'s f0/f1/f2 columns deliberately do *not* match the
+    registry -- that is what makes it useful for the mismatch test below.
+    """
+    rng = np.random.default_rng(seed)
+    x = pd.DataFrame({name: rng.random(60) for name in FEATURE_NAMES})
+    y = rng.integers(0, 3, size=60)
+    booster = lgb.train(
+        {"objective": "multiclass", "num_class": 3, "verbosity": -1},
+        lgb.Dataset(x, label=y),
+        num_boost_round=5,
+    )
+    return booster, x
+
+
+def _promote(client, settings, *, feature_set_version: int | None, booster_and_x) -> str:
+    booster, x = booster_and_x
+    with start_run():
+        if feature_set_version is not None:
+            mlflow.log_param("feature_set_version", feature_set_version)
+        logged = log_model(
+            booster,
+            input_example=x,
+            predictions_example=booster.predict(x),
+            registered_model_name=settings.registry_model_name,
+        )
+    client.transition_model_version_stage(
+        name=settings.registry_model_name,
+        version=logged.registered_version,
+        stage=STAGE_PRODUCTION,
+        archive_existing_versions=True,
+    )
+    return logged.registered_version
+
+
+def test_load_production_bundle_is_none_when_nothing_is_promoted(mlflow_env: str) -> None:
+    # None, not an exception: the API must start against an empty registry
+    # and report 503 on /ready rather than crash-looping.
+    settings = _settings(mlflow_env, model_name="marketpulse", experiment="exp-bundle-empty")
+    client = configure(settings)
+    assert load_production_bundle(client, settings.registry_model_name) is None
+
+
+def test_load_production_bundle_returns_version_schema_and_signature(mlflow_env: str) -> None:
+    settings = _settings(mlflow_env, model_name="marketpulse", experiment="exp-bundle")
+    client = configure(settings)
+    version = _promote(client, settings, feature_set_version=7, booster_and_x=_registry_booster())
+
+    bundle = load_production_bundle(client, settings.registry_model_name)
+
+    assert bundle is not None
+    assert bundle.version == version
+    # Read off the run param ml.pipeline logs, not assumed from the registry.
+    assert bundle.feature_set_version == 7
+    assert bundle.feature_names == FEATURE_NAMES
+    assert bundle.run_id
+
+
+def test_load_production_bundle_falls_back_to_the_current_feature_set_version(
+    mlflow_env: str,
+) -> None:
+    # A model registered before the param existed. The fallback is the
+    # optimistic branch, so it only applies when the param is genuinely
+    # absent -- a present-but-different value must always win.
+    settings = _settings(mlflow_env, model_name="marketpulse", experiment="exp-bundle-nofsv")
+    client = configure(settings)
+    _promote(client, settings, feature_set_version=None, booster_and_x=_registry_booster())
+
+    bundle = load_production_bundle(client, settings.registry_model_name)
+
+    assert bundle is not None
+    assert bundle.feature_set_version == FEATURE_SET_VERSION
+
+
+def test_a_model_whose_signature_is_not_the_registry_is_refused_at_load_time(
+    mlflow_env: str,
+) -> None:
+    # Never per request: a model with the wrong columns would feed every
+    # value into the wrong slot and still return a confident probability
+    # vector, so it must not reach the serving path at all.
+    settings = _settings(mlflow_env, model_name="marketpulse", experiment="exp-bundle-badsig")
+    client = configure(settings)
+    _promote(client, settings, feature_set_version=1, booster_and_x=_tiny_booster())
+
+    with pytest.raises(ModelSignatureMismatchError):
+        load_production_bundle(client, settings.registry_model_name)
+
+
+def test_promoting_a_new_version_changes_what_the_bundle_resolves_to(
+    mlflow_env: str,
+) -> None:
+    """The exit criterion at the registry seam: no process restart involved."""
+    settings = _settings(mlflow_env, model_name="marketpulse", experiment="exp-bundle-swap")
+    client = configure(settings)
+
+    first = _promote(client, settings, feature_set_version=1, booster_and_x=_registry_booster(0))
+    assert load_production_bundle(client, settings.registry_model_name).version == first
+
+    second = _promote(client, settings, feature_set_version=1, booster_and_x=_registry_booster(1))
+
+    assert second != first
+    assert load_production_bundle(client, settings.registry_model_name).version == second

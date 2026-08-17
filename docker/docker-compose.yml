@@ -206,6 +206,84 @@ services:
     mem_limit: 1g
     cpus: "1.0"
 
+  # Shared env for the two marketpulse app services (Phase 5 API, Phase 6
+  # dashboard). Same in-network hostnames the Airflow services use, and the
+  # same rule: config comes from env only (CLAUDE.md rule #12).
+  api: &app-common
+    build:
+      context: ..
+      dockerfile: docker/app.Dockerfile
+    restart: unless-stopped
+    environment: &app-common-env
+      MP_ENV: local
+      MP_LOG_LEVEL: ${MP_LOG_LEVEL:-INFO}
+      MP_DB__HOST: postgres
+      MP_DB__PORT: "5432"
+      MP_DB__USER: ${MP_DB__USER:-marketpulse}
+      MP_DB__PASSWORD: ${MP_DB__PASSWORD:-marketpulse}
+      MP_DB__NAME: ${MP_DB__NAME:-marketpulse}
+      MP_RABBITMQ__HOST: rabbitmq
+      MP_RABBITMQ__PORT: "5672"
+      MP_RABBITMQ__USER: ${MP_RABBITMQ__USER:-marketpulse}
+      MP_RABBITMQ__PASSWORD: ${MP_RABBITMQ__PASSWORD:-marketpulse}
+      MP_MLFLOW__TRACKING_URI: http://mlflow:5000
+      MP_MLFLOW__REGISTRY_MODEL_NAME: ${MP_MLFLOW__REGISTRY_MODEL_NAME:-marketpulse}
+      MP_MLFLOW__EXPERIMENT_NAME: ${MP_MLFLOW__EXPERIMENT_NAME:-marketpulse}
+      MP_SERVING__MAX_FEATURE_AGE_SECONDS: ${MP_SERVING__MAX_FEATURE_AGE_SECONDS:-120}
+      MP_SERVING__MODEL_REFRESH_SECONDS: ${MP_SERVING__MODEL_REFRESH_SECONDS:-60}
+      MP_SERVING__MAX_PAGE_SIZE: ${MP_SERVING__MAX_PAGE_SIZE:-500}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    mem_limit: 2g
+    cpus: "1.0"
+    healthcheck:
+      # /health, not /ready: this restarts the container when it fails, and
+      # /ready is 503 whenever no model is promoted yet -- which would turn a
+      # cold registry into an endless restart loop. Liveness and readiness
+      # are different questions and this is the one that must never lie.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  dashboard:
+    <<: *app-common
+    environment:
+      <<: *app-common-env
+      # Streamlit writes usage stats to a config dir it can't create as a
+      # non-root user; disabling telemetry avoids the warning entirely.
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    command:
+      - streamlit
+      - run
+      - services/dashboard/app.py
+      - --server.port=8501
+      - --server.address=0.0.0.0
+      - --server.headless=true
+    mem_limit: 1g
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
   airflow-apiserver:
     <<: *airflow-common
     restart: unless-stopped

@@ -1,13 +1,14 @@
 """Idempotent feature vector persistence + latest-per-symbol lookup."""
 
+from collections.abc import Sequence
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from marketpulse.contracts.features import FeatureVector
-from marketpulse.storage.models import Feature
+from marketpulse.storage.models import Feature, Symbol
 from marketpulse.storage.repositories.symbols import get_or_create_symbol_id
 
 
@@ -47,6 +48,40 @@ def latest_feature_vector(
         .limit(1)
     )
     return session.execute(stmt).scalar_one_or_none()
+
+
+def latest_feature_vector_per_symbol(
+    session: Session, feature_set_version: int, *, symbols: Sequence[str] | None = None
+) -> list[tuple[str, Feature]]:
+    """Newest feature row for every symbol, in one query.
+
+    ``DISTINCT ON`` rather than a per-symbol loop: the batch predictions
+    endpoint must not issue N round-trips to answer one request, and the
+    partial index ``ix_features_symbol_ts_desc`` already orders exactly this
+    way.
+    """
+    stmt = (
+        select(Symbol.code, Feature)
+        .join(Symbol, Symbol.id == Feature.symbol_id)
+        .where(Feature.feature_set_version == feature_set_version)
+        .distinct(Feature.symbol_id)
+        .order_by(Feature.symbol_id, Feature.feature_ts.desc())
+    )
+    if symbols:
+        stmt = stmt.where(Symbol.code.in_(symbols))
+    return [(code, feature) for code, feature in session.execute(stmt)]
+
+
+def latest_feature_ts_per_symbol(session: Session) -> dict[str, datetime]:
+    """Newest ``feature_ts`` per symbol code — the ``/api/v1/symbols`` read
+    and the dashboard's "last seen" column.
+    """
+    stmt = (
+        select(Symbol.code, func.max(Feature.feature_ts))
+        .join(Symbol, Symbol.id == Feature.symbol_id)
+        .group_by(Symbol.code)
+    )
+    return {code: ts for code, ts in session.execute(stmt) if ts is not None}
 
 
 def list_feature_rows_in_range(

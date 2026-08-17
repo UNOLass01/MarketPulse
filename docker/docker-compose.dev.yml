@@ -29,3 +29,11 @@ services:
   airflow-apiserver:
     ports:
       - "8080:8080" # Airflow UI + REST API
+
+  api:
+    ports:
+      - "8000:8000" # prediction API + /docs + /metrics
+
+  dashboard:
+    ports:
+      - "8501:8501" # Streamlit

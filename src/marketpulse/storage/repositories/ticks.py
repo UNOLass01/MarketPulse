@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from marketpulse.contracts.messages import TickEnvelope
-from marketpulse.storage.models import RawTick
+from marketpulse.storage.models import RawTick, Symbol
 from marketpulse.storage.repositories.symbols import get_or_create_symbol_id
 
 
@@ -69,6 +69,36 @@ def latest_observed_at(session: Session, symbol_id: int) -> datetime | None:
     """
     stmt = select(func.max(RawTick.observed_at)).where(RawTick.symbol_id == symbol_id)
     return session.execute(stmt).scalar_one_or_none()
+
+
+def latest_observed_at_per_symbol(session: Session) -> dict[str, datetime]:
+    """Newest ``observed_at`` per symbol code, in one query — the
+    ``/api/v1/symbols`` read and the dashboard's last-tick-per-symbol panel.
+    """
+    stmt = (
+        select(Symbol.code, func.max(RawTick.observed_at))
+        .join(Symbol, Symbol.id == RawTick.symbol_id)
+        .group_by(Symbol.code)
+    )
+    return {code: ts for code, ts in session.execute(stmt) if ts is not None}
+
+
+def list_ticks_page(
+    session: Session, *, symbol: str, start: datetime, end: datetime, limit: int, offset: int = 0
+) -> tuple[list[RawTick], bool]:
+    """A bounded page of raw ticks, newest first. Fetches ``limit + 1`` to
+    report ``has_more`` without a second COUNT over a partitioned table.
+    """
+    stmt = (
+        select(RawTick)
+        .join(Symbol, Symbol.id == RawTick.symbol_id)
+        .where(Symbol.code == symbol, RawTick.observed_at >= start, RawTick.observed_at < end)
+        .order_by(RawTick.observed_at.desc())
+        .offset(offset)
+        .limit(limit + 1)
+    )
+    rows = list(session.execute(stmt).scalars())
+    return rows[:limit], len(rows) > limit
 
 
 def list_ticks_in_range(

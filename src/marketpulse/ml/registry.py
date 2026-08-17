@@ -33,6 +33,8 @@ from mlflow.tracking import MlflowClient
 
 from marketpulse.config import MLflowSettings
 from marketpulse.exceptions import TransientError
+from marketpulse.features.registry import FEATURE_NAMES, FEATURE_SET_VERSION
+from marketpulse.ml.predict import LoadedModel, validate_feature_names
 
 STAGE_STAGING = "Staging"
 STAGE_PRODUCTION = "Production"
@@ -164,3 +166,68 @@ def load_production_model(model_name: str) -> Any:
     "the incumbent" uses exactly what's live.
     """
     return mlflow.pyfunc.load_model(f"models:/{model_name}/{STAGE_PRODUCTION}")
+
+
+def _signature_feature_names(model: Any) -> tuple[str, ...]:
+    """Input column names from the model's logged signature.
+
+    Falls back to the registry's own order when a model was logged without a
+    signature. That fallback is safe only because
+    ``predict.validate_feature_names`` still runs on the result -- it just
+    means an unsigned model is checked against the registry rather than
+    against its own (absent) declaration.
+    """
+    try:
+        schema = model.metadata.get_input_schema()
+    except (AttributeError, MlflowException):
+        return FEATURE_NAMES
+    if schema is None:
+        return FEATURE_NAMES
+    names = schema.input_names()
+    return tuple(names) if names else FEATURE_NAMES
+
+
+def _feature_set_version_of(client: MlflowClient, name: str, version: str) -> int:
+    """Read ``feature_set_version`` off the run that produced this model
+    version -- ``ml.pipeline`` logs it as a run param on every run.
+
+    Falls back to the *current* ``FEATURE_SET_VERSION`` only when the param
+    is absent (a model registered before the param existed). That fallback
+    is the optimistic branch, so it is deliberately narrow: a present-but-
+    different value must always win, since detecting exactly that difference
+    is what the serving schema guard exists for.
+    """
+    model_version = client.get_model_version(name, version)
+    run_id = getattr(model_version, "run_id", None)
+    if not run_id:
+        return FEATURE_SET_VERSION
+    raw = client.get_run(run_id).data.params.get("feature_set_version")
+    return int(raw) if raw is not None else FEATURE_SET_VERSION
+
+
+def load_production_bundle(client: MlflowClient, model_name: str) -> LoadedModel | None:
+    """Resolve the Production model plus the metadata serving's guards need.
+
+    Returns ``None`` -- not an exception -- when nothing is in Production, so
+    the API can start against an empty registry and report 503 on ``/ready``
+    instead of crash-looping (phase-5 plan). Genuine failures (tracking
+    server unreachable, artifact missing) still raise, because those are
+    exactly what ``ModelCache.refresh`` must distinguish from "not promoted
+    yet" in order to keep serving the model it already holds.
+    """
+    version = get_stage_version(client, model_name, STAGE_PRODUCTION)
+    if version is None:
+        return None
+
+    model = load_production_model(model_name)
+    feature_names = _signature_feature_names(model)
+    validate_feature_names(feature_names)
+
+    model_version = client.get_model_version(model_name, version)
+    return LoadedModel(
+        model=model,
+        version=version,
+        feature_set_version=_feature_set_version_of(client, model_name, version),
+        feature_names=feature_names,
+        run_id=getattr(model_version, "run_id", None),
+    )

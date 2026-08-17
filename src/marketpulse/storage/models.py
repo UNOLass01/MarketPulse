@@ -214,6 +214,179 @@ class QualityCheck(Base):
     )
 
 
+class Prediction(Base):
+    """One prediction served by the API (Phase 5).
+
+    Deliberately **one row per (symbol, feature_ts, model_version)**, not one
+    per HTTP request. Two callers asking for BTC-USD a second apart get the
+    same answer off the same feature row, and logging both would weight
+    Phase 6's rolling accuracy by request volume instead of by prediction
+    events -- a busy afternoon would quietly count more than a quiet one.
+    The unique constraint is what makes ``prediction_outcomes`` a clean 1:1
+    join later.
+
+    ``latency_ms`` is therefore the first observation for that key, which is
+    the honest one: it is the only request that actually did the inference.
+    """
+
+    __tablename__ = "predictions"
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol_id", "feature_ts", "model_version", name="uq_predictions_symbol_ts_model"
+        ),
+        CheckConstraint("label IN ('DOWN', 'STABLE', 'UP')", name="ck_predictions_label"),
+        Index("ix_predictions_predicted_at", "predicted_at"),
+        Index("ix_predictions_model_version", "model_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id"), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    feature_set_version: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    feature_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    predicted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    label: Mapped[str] = mapped_column(String(8), nullable=False)
+    probabilities: Mapped[dict[str, float]] = mapped_column(JSONB, nullable=False)
+    latency_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    correlation_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+Index(
+    "ix_predictions_symbol_predicted_at_desc",
+    Prediction.symbol_id,
+    Prediction.predicted_at.desc(),
+)
+
+
+class PredictionOutcome(Base):
+    """What actually happened, ``H`` after a prediction was made (Phase 6).
+
+    A separate table from ``predictions`` rather than nullable columns on it,
+    because it is written later by a different process
+    (``dag_performance_attribution``, lagged by the horizon). Folding it in
+    would mean the serving path owns columns it can never fill, and "not
+    resolved yet" would be indistinguishable from "resolved as null".
+
+    ``base_price`` and ``future_price`` are both stored even though only
+    ``realised_return`` is used downstream: without them a disputed label is
+    unauditable after the fact.
+    """
+
+    __tablename__ = "prediction_outcomes"
+    __table_args__ = (
+        UniqueConstraint("prediction_id", name="uq_prediction_outcomes_prediction"),
+        CheckConstraint(
+            "actual_label IN ('DOWN', 'STABLE', 'UP')", name="ck_prediction_outcomes_label"
+        ),
+        Index("ix_prediction_outcomes_resolved_at", "resolved_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    prediction_id: Mapped[int] = mapped_column(ForeignKey("predictions.id"), nullable=False)
+    horizon_minutes: Mapped[float] = mapped_column(Float, nullable=False)
+    theta: Mapped[float] = mapped_column(Float, nullable=False)
+    base_price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    future_price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    future_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    realised_return: Mapped[float] = mapped_column(Float, nullable=False)
+    actual_label: Mapped[str] = mapped_column(String(8), nullable=False)
+    is_correct: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    resolved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class DriftMetric(Base):
+    """One drift statistic for one feature over one window (Phase 6).
+
+    **Long, not wide**: a row per (feature, metric, window) rather than a
+    column per feature. Adding a feature to ``features.registry`` then needs
+    no migration here at all, which is the difference between drift
+    monitoring that survives feature-set evolution and drift monitoring that
+    quietly stops covering the newest features.
+
+    ``reference_model_version`` records *which* Production model's training
+    snapshot this was compared against. Drift is only meaningful relative to
+    what the live model was trained on; comparing against yesterday's live
+    data measures change, not drift-from-training.
+    """
+
+    __tablename__ = "drift_metrics"
+    __table_args__ = (
+        UniqueConstraint(
+            "feature_name",
+            "metric_name",
+            "window_start",
+            "window_end",
+            "reference_model_version",
+            name="uq_drift_metrics_feature_metric_window",
+        ),
+        CheckConstraint(
+            "severity IN ('stable', 'moderate', 'significant')", name="ck_drift_metrics_severity"
+        ),
+        Index("ix_drift_metrics_computed_at", "computed_at"),
+        Index("ix_drift_metrics_feature_window", "feature_name", "window_end"),
+    )
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    feature_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    metric_name: Mapped[str] = mapped_column(String(16), nullable=False)
+    metric_value: Mapped[float] = mapped_column(Float, nullable=False)
+    #: Null for PSI, which is a divergence with no null hypothesis attached.
+    #: Populated for KS and chi-square.
+    p_value: Mapped[float | None] = mapped_column(Float)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    reference_model_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class Alert(Base):
+    """A threshold breach that survived suppression and sustained-breach logic.
+
+    ``runbook`` is ``nullable=False`` on purpose. An alert with no attached
+    action is just anxiety (phase-6 plan), so the schema refuses to store
+    one; there is no path that raises an alert without naming what to do
+    about it.
+
+    ``dedup_key`` plus ``status='open'`` is what makes a repeating condition
+    update one row instead of accumulating a new alert per evaluation.
+    """
+
+    __tablename__ = "alerts"
+    __table_args__ = (
+        CheckConstraint("status IN ('open', 'resolved')", name="ck_alerts_status"),
+        CheckConstraint("severity IN ('info', 'warning', 'critical')", name="ck_alerts_severity"),
+        Index("ix_alerts_dedup_status", "dedup_key", "status"),
+        Index("ix_alerts_first_breached_at", "first_breached_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    alert_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    dedup_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    runbook: Mapped[str] = mapped_column(String(128), nullable=False)
+    details: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    #: How many consecutive evaluations have breached. An alert only fires
+    #: once this reaches the configured threshold -- a single spike raises
+    #: the counter without waking anyone.
+    consecutive_breaches: Mapped[int] = mapped_column(Integer, nullable=False)
+    first_breached_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class ArchivedPartition(Base):
     """Record of one ``dag_data_archival`` export -- the audit trail proving
     a dropped partition's data really did make it to object storage first.
