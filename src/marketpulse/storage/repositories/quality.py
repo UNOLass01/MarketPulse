@@ -42,6 +42,26 @@ def record_quality_check(
     return check.id
 
 
+def list_checks_since(session: Session, *, since: datetime) -> list[QualityCheck]:
+    """Every check result at or after ``since``, newest first — the API's
+    ``/monitoring/quality`` read and the dashboard's quality-history panel.
+    """
+    stmt = (
+        select(QualityCheck)
+        .where(QualityCheck.checked_at >= since)
+        .order_by(QualityCheck.checked_at.desc())
+    )
+    return list(session.execute(stmt).scalars())
+
+
+def latest_checked_at(session: Session) -> datetime | None:
+    """When data-quality checks last ran at all. Reported separately from the
+    results so "never run" and "all passing" stay distinguishable.
+    """
+    stmt = select(QualityCheck.checked_at).order_by(QualityCheck.checked_at.desc()).limit(1)
+    return session.execute(stmt).scalar_one_or_none()
+
+
 def latest_checks_passed(session: Session, *, since: datetime) -> bool:
     """True iff, for every check in :data:`ALL_CHECK_NAMES`, the most recent
     run at or after ``since`` exists and passed. A missing or stale check

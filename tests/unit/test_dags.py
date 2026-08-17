@@ -60,6 +60,8 @@ EXPECTED_TASK_COUNTS = {
     "dag_feature_backfill": 1,
     "dag_data_archival": 1,
     "dag_partition_maintenance": 1,
+    "dag_drift_monitoring": 2,
+    "dag_performance_attribution": 2,
 }
 
 
@@ -146,3 +148,15 @@ def test_dag_model_retraining_gates_training_on_quality() -> None:
 
 def test_dag_feature_backfill_is_manual_trigger_only() -> None:
     assert _load_dag(DAGS_DIR / "dag_feature_backfill.py").schedule is None
+
+
+def test_drift_monitoring_evaluates_alerts_after_computing_drift() -> None:
+    # Ordering is the whole point of the DAG: alert evaluation must consume
+    # *this* run's drift results, not whatever happened to be in the table.
+    dag = _load_dag(DAGS_DIR / "dag_drift_monitoring.py")
+    assert "evaluate_alerts" in dag.task_dict["compute_drift"].downstream_task_ids
+
+
+def test_performance_attribution_evaluates_alerts_after_resolving() -> None:
+    dag = _load_dag(DAGS_DIR / "dag_performance_attribution.py")
+    assert "evaluate_alerts" in dag.task_dict["resolve_and_score"].downstream_task_ids
